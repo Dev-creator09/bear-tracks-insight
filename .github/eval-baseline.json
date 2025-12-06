@@ -1,0 +1,12 @@
+{
+  "recall_at_10": 0.85,
+  "mrr": 0.72,
+  "precision_at_10": 0.78,
+  "ndcg_at_10": 0.80,
+  "avg_latency_ms": 1800,
+  "avg_cost_usd": 0.08,
+  "total_queries": 40,
+  "model_version": "claude-3-5-sonnet-20241022",
+  "timestamp": "2025-12-06T00:00:00Z",
+  "note": "Initial baseline - to be updated after first successful eval run"
+}

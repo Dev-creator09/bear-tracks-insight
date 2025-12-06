@@ -1,0 +1,52 @@
+{
+  "overall": {
+    "recall_at_10": 0.85,
+    "mrr": 0.70,
+    "precision_at_10": 0.65,
+    "ndcg_at_10": 0.75,
+    "avg_latency_ms": 2000,
+    "total_cost_usd": 3.0,
+    "num_queries": 40
+  },
+  "by_category": {
+    "easy_courses": {
+      "recall_at_10": 0.88,
+      "mrr": 0.75,
+      "precision_at_10": 0.70,
+      "ndcg_at_10": 0.80,
+      "avg_latency_ms": 1800,
+      "total_cost_usd": 0.75,
+      "num_queries": 10
+    },
+    "prereq_planning": {
+      "recall_at_10": 0.82,
+      "mrr": 0.68,
+      "precision_at_10": 0.62,
+      "ndcg_at_10": 0.72,
+      "avg_latency_ms": 2100,
+      "total_cost_usd": 0.80,
+      "num_queries": 10
+    },
+    "specialization": {
+      "recall_at_10": 0.85,
+      "mrr": 0.70,
+      "precision_at_10": 0.65,
+      "ndcg_at_10": 0.75,
+      "avg_latency_ms": 2000,
+      "total_cost_usd": 0.75,
+      "num_queries": 10
+    },
+    "professor": {
+      "recall_at_10": 0.85,
+      "mrr": 0.67,
+      "precision_at_10": 0.63,
+      "ndcg_at_10": 0.73,
+      "avg_latency_ms": 2000,
+      "total_cost_usd": 0.70,
+      "num_queries": 10
+    }
+  },
+  "timestamp": "2025-12-06T00:00:00",
+  "model_version": "claude-3-5-sonnet-20241022",
+  "note": "Baseline metrics for initial system deployment"
+}

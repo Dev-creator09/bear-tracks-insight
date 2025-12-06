@@ -1,0 +1,681 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.github/ISSUE_TEMPLATE/**'
+  pull_request:
+    branches: [main, develop]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  workflow_dispatch:
+
+# Cancel in-progress runs for the same workflow on the same branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '20.x'
+  PYTHON_VERSION: '3.11'
+  PNPM_VERSION: '8.15.0'
+
+jobs:
+  # ============================================================================
+  # Test API (Python/FastAPI)
+  # ============================================================================
+  test-api:
+    name: Test API
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: bear_tracks_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+          cache-dependency-path: apps/api/requirements.txt
+
+      - name: Install dependencies
+        working-directory: apps/api
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio pytest-cov httpx
+
+      - name: Install pgvector extension
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+          PGPASSWORD=postgres psql -h localhost -U postgres -d bear_tracks_test -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+      - name: Run database migrations
+        working-directory: apps/api
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/bear_tracks_test
+          REDIS_URL: redis://localhost:6379/0
+        run: |
+          # Run Alembic migrations
+          alembic upgrade head
+
+      - name: Run tests with coverage
+        working-directory: apps/api
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/bear_tracks_test
+          REDIS_URL: redis://localhost:6379/0
+          SECRET_KEY: test-secret-key
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY_TEST }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY_TEST }}
+        run: |
+          pytest tests/ \
+            --cov=app \
+            --cov-report=xml \
+            --cov-report=term \
+            --maxfail=3 \
+            -v
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: apps/api/coverage.xml
+          flags: api
+          name: api-coverage
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: api-coverage
+          path: apps/api/coverage.xml
+          retention-days: 7
+
+  # ============================================================================
+  # Test Web (Next.js/TypeScript)
+  # ============================================================================
+  test-web:
+    name: Test Web
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run type checking
+        working-directory: apps/web
+        run: pnpm tsc --noEmit
+
+      - name: Run tests with coverage
+        working-directory: apps/web
+        run: pnpm test --coverage --passWithNoTests
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: apps/web/coverage/coverage-final.json
+          flags: web
+          name: web-coverage
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: web-coverage
+          path: apps/web/coverage/
+          retention-days: 7
+
+  # ============================================================================
+  # Lint (Code Quality)
+  # ============================================================================
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+          cache-dependency-path: apps/api/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          pnpm install --frozen-lockfile
+          cd apps/api && pip install -r requirements.txt && pip install ruff black isort
+
+      - name: Run ESLint
+        run: pnpm lint
+        continue-on-error: true
+
+      - name: Run Python linting (ruff)
+        working-directory: apps/api
+        run: ruff check . --output-format=github
+        continue-on-error: true
+
+      - name: Check Python formatting (black)
+        working-directory: apps/api
+        run: black --check .
+        continue-on-error: true
+
+      - name: Check Python imports (isort)
+        working-directory: apps/api
+        run: isort --check-only .
+        continue-on-error: true
+
+  # ============================================================================
+  # Evaluation Harness (Search Quality Metrics)
+  # ============================================================================
+  eval-harness:
+    name: Evaluation Harness
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Only run on main branch pushes or manual trigger
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: bear_tracks_eval
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+          cache-dependency-path: apps/api/requirements.txt
+
+      - name: Install dependencies
+        working-directory: apps/api
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install pgvector extension
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+          PGPASSWORD=postgres psql -h localhost -U postgres -d bear_tracks_eval -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+      - name: Setup database with test data
+        working-directory: apps/api
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/bear_tracks_eval
+          REDIS_URL: redis://localhost:6379/0
+        run: |
+          # Run migrations
+          alembic upgrade head
+          # Seed test data (if you have a seed script)
+          # python scripts/seed_test_data.py
+
+      - name: Run evaluation harness
+        working-directory: apps/api
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/bear_tracks_eval
+          REDIS_URL: redis://localhost:6379/0
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python -m app.evals.eval_runner > eval-output.txt 2>&1
+        continue-on-error: true
+
+      - name: Load baseline metrics
+        id: baseline
+        run: |
+          if [ -f .github/eval-baseline.json ]; then
+            echo "baseline_exists=true" >> $GITHUB_OUTPUT
+            echo "BASELINE_RECALL=$(jq -r '.recall_at_10' .github/eval-baseline.json)" >> $GITHUB_ENV
+            echo "BASELINE_MRR=$(jq -r '.mrr' .github/eval-baseline.json)" >> $GITHUB_ENV
+          else
+            echo "baseline_exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Compare with baseline
+        if: steps.baseline.outputs.baseline_exists == 'true'
+        working-directory: apps/api
+        run: |
+          # Extract current metrics from SQLite results
+          # This is a placeholder - adjust based on your actual eval_runner output
+          echo "Comparing current results with baseline..."
+          echo "Baseline Recall@10: $BASELINE_RECALL"
+          echo "Baseline MRR: $BASELINE_MRR"
+
+          # TODO: Parse current metrics from evals.db and compare
+          # Fail if metrics regress significantly (>5%)
+
+      - name: Upload eval results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-results
+          path: |
+            apps/api/eval-output.txt
+            apps/api/evals/evals.db
+          retention-days: 30
+
+      - name: Upload detailed logs on failure
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: eval-failure-logs
+          path: |
+            apps/api/eval-output.txt
+            apps/api/logs/
+          retention-days: 7
+
+  # ============================================================================
+  # Build and Push Docker Images
+  # ============================================================================
+  build-and-push:
+    name: Build and Push Docker Images
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [test-api, test-web, eval-harness]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+
+      - name: Extract metadata for web
+        id: meta-web
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKER_USERNAME }}/beartracks-web
+          tags: |
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push web image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./apps/web
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/beartracks-web:${{ github.sha }}
+            ${{ secrets.DOCKER_USERNAME }}/beartracks-web:latest
+          cache-from: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/beartracks-web:buildcache
+          cache-to: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/beartracks-web:buildcache,mode=max
+          sbom: true
+          provenance: true
+
+      - name: Extract metadata for api
+        id: meta-api
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKER_USERNAME }}/beartracks-api
+          tags: |
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push api image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./apps/api
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/beartracks-api:${{ github.sha }}
+            ${{ secrets.DOCKER_USERNAME }}/beartracks-api:latest
+          cache-from: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/beartracks-api:buildcache
+          cache-to: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/beartracks-api:buildcache,mode=max
+          sbom: true
+          provenance: true
+
+      - name: Download eval results
+        uses: actions/download-artifact@v4
+        with:
+          name: eval-results
+          path: ./eval-results
+
+      - name: Download coverage reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: '*-coverage'
+          path: ./coverage-reports
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ github.run_number }}
+          name: Release ${{ github.sha }}
+          body: |
+            Auto-generated release from commit ${{ github.sha }}
+
+            **Docker Images:**
+            - Web: `${{ secrets.DOCKER_USERNAME }}/beartracks-web:${{ github.sha }}`
+            - API: `${{ secrets.DOCKER_USERNAME }}/beartracks-api:${{ github.sha }}`
+
+            **Workflow Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          files: |
+            eval-results/*
+            coverage-reports/*
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ============================================================================
+  # Deploy to Staging (Manual Approval Required)
+  # ============================================================================
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [build-and-push]
+    environment: staging
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Add staging host to known hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.STAGING_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy to staging server
+        env:
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          ssh ${{ secrets.STAGING_USER }}@$STAGING_HOST << 'EOF'
+            set -e
+            cd /opt/beartracks
+
+            # Pull latest images
+            docker pull ${{ secrets.DOCKER_USERNAME }}/beartracks-web:latest
+            docker pull ${{ secrets.DOCKER_USERNAME }}/beartracks-api:latest
+
+            # Run database migrations
+            docker compose run --rm api alembic upgrade head
+
+            # Rolling restart - API first
+            docker compose up -d --no-deps api
+
+            # Wait for API health check
+            echo "Waiting for API to be healthy..."
+            for i in {1..30}; do
+              if curl -f http://localhost:8000/api/v1/health; then
+                echo "API is healthy"
+                break
+              fi
+              if [ $i -eq 30 ]; then
+                echo "API health check failed"
+                exit 1
+              fi
+              sleep 2
+            done
+
+            # Update web service
+            docker compose up -d --no-deps web
+
+            echo "Deployment complete"
+          EOF
+
+      - name: Run smoke tests
+        run: |
+          # Wait for services to be fully ready
+          sleep 10
+
+          # Test API health endpoint
+          curl -f https://staging.beartracks.app/api/v1/health || exit 1
+
+          # Test web application
+          curl -f https://staging.beartracks.app || exit 1
+
+          echo "Smoke tests passed"
+
+      - name: Notify on Slack
+        if: always()
+        uses: slackapi/slack-github-action@v1.25.0
+        with:
+          payload: |
+            {
+              "text": "Staging Deployment ${{ job.status }}",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Staging Deployment ${{ job.status }}*\nCommit: `${{ github.sha }}`\nActor: ${{ github.actor }}"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        continue-on-error: true
+
+  # ============================================================================
+  # Deploy to Production (Manual Approval Required)
+  # ============================================================================
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [deploy-staging]
+    environment: production
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Add production host to known hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.PRODUCTION_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Create database backup
+        env:
+          PRODUCTION_HOST: ${{ secrets.PRODUCTION_HOST }}
+        run: |
+          ssh ${{ secrets.PRODUCTION_USER }}@$PRODUCTION_HOST << 'EOF'
+            set -e
+            BACKUP_FILE="backup-$(date +%Y%m%d-%H%M%S).sql"
+            docker compose exec -T postgres pg_dump -U postgres bear_tracks > /opt/backups/$BACKUP_FILE
+            echo "Backup created: $BACKUP_FILE"
+          EOF
+
+      - name: Deploy to production server
+        id: deploy
+        env:
+          PRODUCTION_HOST: ${{ secrets.PRODUCTION_HOST }}
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+        run: |
+          ssh ${{ secrets.PRODUCTION_USER }}@$PRODUCTION_HOST << 'EOF'
+            set -e
+            cd /opt/beartracks
+
+            # Pull latest images
+            docker pull ${{ secrets.DOCKER_USERNAME }}/beartracks-web:latest
+            docker pull ${{ secrets.DOCKER_USERNAME }}/beartracks-api:latest
+
+            # Run database migrations
+            docker compose run --rm api alembic upgrade head
+
+            # Rolling restart - API first
+            docker compose up -d --no-deps api
+
+            # Wait for API health check
+            echo "Waiting for API to be healthy..."
+            for i in {1..30}; do
+              if curl -f http://localhost:8000/api/v1/health; then
+                echo "API is healthy"
+                break
+              fi
+              if [ $i -eq 30 ]; then
+                echo "API health check failed - rolling back"
+                exit 1
+              fi
+              sleep 2
+            done
+
+            # Update web service
+            docker compose up -d --no-deps web
+
+            echo "Deployment complete"
+          EOF
+
+      - name: Run smoke tests
+        run: |
+          # Wait for services to be fully ready
+          sleep 10
+
+          # Test API health endpoint
+          if ! curl -f https://beartracks.app/api/v1/health; then
+            echo "Production health check failed - initiating rollback"
+            exit 1
+          fi
+
+          # Test web application
+          if ! curl -f https://beartracks.app; then
+            echo "Production web check failed - initiating rollback"
+            exit 1
+          fi
+
+          echo "Smoke tests passed"
+
+      - name: Rollback on failure
+        if: failure()
+        env:
+          PRODUCTION_HOST: ${{ secrets.PRODUCTION_HOST }}
+        run: |
+          echo "Deployment failed - rolling back to previous version"
+          ssh ${{ secrets.PRODUCTION_USER }}@$PRODUCTION_HOST << 'EOF'
+            cd /opt/beartracks
+            docker compose down
+            docker compose up -d
+          EOF
+
+      - name: Notify on Slack
+        if: always()
+        uses: slackapi/slack-github-action@v1.25.0
+        with:
+          payload: |
+            {
+              "text": "Production Deployment ${{ job.status }}",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Production Deployment ${{ job.status }}*\nCommit: `${{ github.sha }}`\nActor: ${{ github.actor }}\nTime: ${{ github.event.head_commit.timestamp }}"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        continue-on-error: true

@@ -1,0 +1,20 @@
+# Build output
+dist
+*.tsbuildinfo
+
+# Dependencies
+node_modules
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Testing
+coverage
+.nyc_output
+
+# Misc
+.DS_Store
+*.log

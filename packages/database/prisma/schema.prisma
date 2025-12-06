@@ -1,0 +1,78 @@
+// Prisma schema for Bear Tracks Course Insight Platform
+// This schema defines the database structure for courses, sentiments, embeddings, and prerequisites
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [pgvector(map: "vector")]
+}
+
+model Course {
+  id                 String   @id @default(uuid())
+  subject            String   // e.g., "CMPUT"
+  number             Int      // e.g., 272
+  title              String
+  description        String   @db.Text
+  credits            Float
+  faculty            String
+  prerequisitesCodes String[] // array of course codes like "CMPUT 201"
+  termAvailability   String[] // e.g., ["Fall 2024", "Winter 2025"]
+  updatedAt          DateTime @updatedAt
+  createdAt          DateTime @default(now())
+
+  // Relations
+  sentiment      CourseSentiment?
+  embedding      CourseEmbedding?
+  prerequisites  Prerequisite[]   @relation("CoursePrerequisites")
+  requiredBy     Prerequisite[]   @relation("RequiredBy")
+
+  @@unique([subject, number], name: "unique_course")
+  @@index([faculty, number], name: "idx_faculty_number")
+  @@index([updatedAt], name: "idx_updated_at")
+  @@map("courses")
+}
+
+model CourseSentiment {
+  id                 String   @id @default(uuid())
+  courseId           String   @unique @map("course_id")
+  course             Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  redditThreadIds    String[]
+  difficultyAvg      Float?   // nullable, 1-5 scale
+  workloadAvg        Float?   // nullable, hours per week
+  gpaEstimate        Float?   // nullable, 0-4.0 scale
+  professorMentions  Json?    // map of professor names to sentiment scores
+  warnings           String[] // e.g., "heavy math", "avoid Winter"
+  lastScrapedAt      DateTime @default(now())
+
+  @@index([lastScrapedAt], name: "idx_last_scraped")
+  @@map("course_sentiments")
+}
+
+model CourseEmbedding {
+  courseId          String                      @id @map("course_id")
+  course            Course                      @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  descriptionVector Unsupported("vector(1536)")
+  reviewsVector     Unsupported("vector(1536)")
+  createdAt         DateTime                    @default(now())
+
+  @@map("course_embeddings")
+}
+
+model Prerequisite {
+  id             String   @id @default(uuid())
+  courseId       String   @map("course_id")
+  course         Course   @relation("CoursePrerequisites", fields: [courseId], references: [id], onDelete: Cascade)
+  requiresId     String   @map("requires_id")
+  requiredCourse Course   @relation("RequiredBy", fields: [requiresId], references: [id], onDelete: Cascade)
+  createdAt      DateTime @default(now())
+
+  @@unique([courseId, requiresId], name: "unique_prerequisite")
+  @@index([courseId], name: "idx_prereq_course")
+  @@index([requiresId], name: "idx_prereq_requires")
+  @@map("prerequisites")
+}

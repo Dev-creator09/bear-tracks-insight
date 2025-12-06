@@ -1,0 +1,195 @@
+name: Dependency Updates
+
+on:
+  schedule:
+    # Run every Monday at 00:00 UTC
+    - cron: '0 0 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-npm-dependencies:
+    name: Update NPM Dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: '8.15.0'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'pnpm'
+
+      - name: Update dependencies
+        run: |
+          # Update all dependencies to latest compatible versions
+          pnpm update --latest --recursive
+
+      - name: Run tests
+        run: |
+          pnpm install
+          pnpm test
+        continue-on-error: true
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: 'chore(deps): update npm dependencies'
+          branch: deps/npm-update-${{ github.run_number }}
+          delete-branch: true
+          title: 'Update NPM Dependencies'
+          body: |
+            ## Automated Dependency Update
+
+            This PR updates NPM dependencies to their latest compatible versions.
+
+            **Changes:**
+            - Updated dependencies via `pnpm update --latest`
+
+            **Testing:**
+            - Tests were run after updates (check workflow logs)
+
+            **Review Required:**
+            - Review dependency changes in `package.json` and `pnpm-lock.yaml`
+            - Verify no breaking changes were introduced
+            - Run tests locally if needed
+
+            **Triggered by:** Scheduled workflow
+          labels: |
+            dependencies
+            automated
+          draft: false
+
+  update-python-dependencies:
+    name: Update Python Dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install pip-tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install pip-tools
+
+      - name: Update dependencies
+        working-directory: apps/api
+        run: |
+          # Create requirements.in if it doesn't exist
+          if [ ! -f requirements.in ]; then
+            cp requirements.txt requirements.in
+          fi
+
+          # Update dependencies
+          pip-compile --upgrade requirements.in
+
+      - name: Run tests
+        working-directory: apps/api
+        run: |
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio
+          pytest tests/ || true
+        continue-on-error: true
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: 'chore(deps): update python dependencies'
+          branch: deps/python-update-${{ github.run_number }}
+          delete-branch: true
+          title: 'Update Python Dependencies'
+          body: |
+            ## Automated Dependency Update
+
+            This PR updates Python dependencies to their latest compatible versions.
+
+            **Changes:**
+            - Updated dependencies via `pip-compile --upgrade`
+
+            **Testing:**
+            - Tests were run after updates (check workflow logs)
+
+            **Review Required:**
+            - Review dependency changes in `requirements.txt`
+            - Verify no breaking changes were introduced
+            - Run tests locally if needed
+
+            **Triggered by:** Scheduled workflow
+          labels: |
+            dependencies
+            automated
+          draft: false
+
+  update-github-actions:
+    name: Update GitHub Actions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Update GitHub Actions versions
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            // Find all workflow files
+            const workflowsDir = '.github/workflows';
+            const files = fs.readdirSync(workflowsDir);
+
+            console.log('Checking workflow files for outdated action versions...');
+
+            // This is a placeholder - in practice, you'd want to use a tool like
+            // dependabot or renovate for this. For now, just log the files.
+            files.forEach(file => {
+              if (file.endsWith('.yml') || file.endsWith('.yaml')) {
+                console.log(`- ${file}`);
+              }
+            });
+
+      - name: Create issue for manual review
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: 'Review GitHub Actions versions',
+              body: `Weekly reminder to review and update GitHub Actions versions in workflow files.
+
+              **Files to check:**
+              - .github/workflows/*.yml
+
+              **Common actions to update:**
+              - actions/checkout
+              - actions/setup-node
+              - actions/setup-python
+              - docker/build-push-action
+              - docker/login-action
+
+              Check for latest versions at: https://github.com/marketplace?type=actions`,
+              labels: ['dependencies', 'github-actions', 'maintenance']
+            });

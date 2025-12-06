@@ -1,0 +1,701 @@
+openapi: 3.1.0
+info:
+  title: Bear Tracks Course Insight Platform API
+  version: 1.0.0
+  description: |
+    API for discovering courses, analyzing sentiment, and exploring prerequisites at University of Alberta.
+
+    ## Features
+    - Course discovery with advanced filtering
+    - Sentiment analysis (difficulty, workload, GPA estimates)
+    - Semantic search using AI embeddings
+    - Prerequisite tree traversal
+    - Real-time data scraping
+
+  contact:
+    name: Bear Tracks Team
+    email: support@beartracks.example.com
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:8000
+    description: Local development
+  - url: https://api.beartracks.example.com
+    description: Production
+
+tags:
+  - name: Courses
+    description: Course discovery and retrieval
+  - name: Search
+    description: Semantic course search
+  - name: Prerequisites
+    description: Course prerequisite relationships
+  - name: Scrape
+    description: Admin endpoints for data scraping
+  - name: Health
+    description: System health and status
+
+paths:
+  /api/v1/courses:
+    get:
+      tags: [Courses]
+      summary: List courses with pagination and filters
+      description: |
+        Retrieve a paginated list of courses with optional filtering by faculty, subject, GPA, difficulty, and term availability.
+        Uses cursor-based pagination for efficient large dataset traversal.
+      operationId: listCourses
+      parameters:
+        - name: cursor
+          in: query
+          description: Pagination cursor from previous response
+          schema:
+            type: string
+            example: "Science:272:a1b2c3d4"
+        - name: limit
+          in: query
+          description: Number of results per page
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: faculty
+          in: query
+          description: Filter by faculty
+          schema:
+            type: string
+            example: "Science"
+        - name: subject
+          in: query
+          description: Filter by subject code
+          schema:
+            type: string
+            example: "CMPUT"
+        - name: min_gpa
+          in: query
+          description: Minimum GPA estimate
+          schema:
+            type: number
+            format: float
+            minimum: 0
+            maximum: 4
+            example: 3.0
+        - name: max_difficulty
+          in: query
+          description: Maximum difficulty rating
+          schema:
+            type: number
+            format: float
+            minimum: 1
+            maximum: 5
+            example: 3.5
+        - name: term
+          in: query
+          description: Filter by term availability
+          schema:
+            type: string
+            example: "Fall"
+      responses:
+        '200':
+          description: Successful response with course list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CourseListResponse'
+        '400':
+          description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/courses/{subject}/{number}:
+    get:
+      tags: [Courses]
+      summary: Get detailed course information
+      description: Retrieve comprehensive information about a specific course including sentiment data, prerequisites, and courses that require it.
+      operationId: getCourseDetail
+      parameters:
+        - name: subject
+          in: path
+          required: true
+          description: Course subject code
+          schema:
+            type: string
+            example: "CMPUT"
+        - name: number
+          in: path
+          required: true
+          description: Course number
+          schema:
+            type: integer
+            example: 272
+      responses:
+        '200':
+          description: Successful response with course details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CourseDetailResponse'
+        '404':
+          description: Course not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/courses/search:
+    post:
+      tags: [Search]
+      summary: Semantic search for courses
+      description: |
+        Search for courses using natural language queries powered by AI embeddings.
+        Returns ranked results with relevance scores and optional reasoning.
+      operationId: searchCourses
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchQuery'
+            examples:
+              basicSearch:
+                summary: Basic search
+                value:
+                  query: "machine learning courses with good ratings"
+                  limit: 10
+              advancedSearch:
+                summary: Search with filters
+                value:
+                  query: "easy intro courses"
+                  filters:
+                    subject: "CMPUT"
+                    maxDifficulty: 3.0
+                  limit: 5
+      responses:
+        '200':
+          description: Successful search with ranked results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CourseSearchResponse'
+        '400':
+          description: Invalid search query
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/prerequisites/{subject}/{number}:
+    get:
+      tags: [Prerequisites]
+      summary: Get prerequisite tree for a course
+      description: |
+        Retrieve the complete prerequisite tree/graph for a course, showing all required courses and their dependencies.
+        Supports configurable depth to limit recursion.
+      operationId: getPrerequisiteTree
+      parameters:
+        - name: subject
+          in: path
+          required: true
+          description: Course subject code
+          schema:
+            type: string
+            example: "CMPUT"
+        - name: number
+          in: path
+          required: true
+          description: Course number
+          schema:
+            type: integer
+            example: 272
+        - name: depth
+          in: query
+          description: Maximum depth to traverse
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 10
+            default: 5
+      responses:
+        '200':
+          description: Successful response with prerequisite tree
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrerequisiteTreeResponse'
+        '404':
+          description: Course not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/scrape/trigger:
+    post:
+      tags: [Scrape]
+      summary: Trigger course scraping (Admin only)
+      description: |
+        Admin-only endpoint to trigger scraping of course data from external sources.
+        Requires API key authentication and respects rate limits.
+      operationId: triggerScrape
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScrapeJobRequest'
+      responses:
+        '202':
+          description: Scrape job accepted and queued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScrapeJobResponse'
+        '401':
+          description: Unauthorized - invalid or missing API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/health:
+    get:
+      tags: [Health]
+      summary: Health check endpoint
+      description: Check the health status of the API and its dependencies (database, Redis)
+      operationId: healthCheck
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: Service is unhealthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key for admin endpoints
+
+  schemas:
+    Course:
+      type: object
+      required:
+        - id
+        - subject
+        - number
+        - title
+        - description
+        - credits
+        - faculty
+        - prerequisiteCodes
+        - termAvailability
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        subject:
+          type: string
+          minLength: 2
+          maxLength: 10
+          example: "CMPUT"
+        number:
+          type: integer
+          minimum: 100
+          maximum: 999
+          example: 272
+        title:
+          type: string
+          example: "Formal Systems and Logic in Computing Science"
+        description:
+          type: string
+          example: "Propositional and predicate logic, formal proof techniques..."
+        credits:
+          type: number
+          format: float
+          minimum: 0
+          example: 3.0
+        faculty:
+          type: string
+          example: "Science"
+        prerequisiteCodes:
+          type: array
+          items:
+            type: string
+          example: ["CMPUT 175", "MATH 101"]
+        termAvailability:
+          type: array
+          items:
+            type: string
+          example: ["Fall", "Winter"]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    CourseSentiment:
+      type: object
+      required:
+        - id
+        - courseId
+        - redditThreadIds
+        - warnings
+        - lastScrapedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        courseId:
+          type: string
+          format: uuid
+        redditThreadIds:
+          type: array
+          items:
+            type: string
+          example: ["abc123", "def456"]
+        difficultyAvg:
+          type: number
+          format: float
+          minimum: 1
+          maximum: 5
+          nullable: true
+          example: 3.5
+        workloadAvg:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 40
+          nullable: true
+          example: 12.5
+        gpaEstimate:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 4
+          nullable: true
+          example: 3.2
+        professorMentions:
+          type: object
+          additionalProperties:
+            type: number
+          nullable: true
+          example:
+            "Smith, J.": 4.2
+            "Doe, A.": 3.8
+        warnings:
+          type: array
+          items:
+            type: string
+          example: ["heavy math", "lots of coding"]
+        lastScrapedAt:
+          type: string
+          format: date-time
+
+    CourseWithSentiment:
+      allOf:
+        - $ref: '#/components/schemas/Course'
+        - type: object
+          properties:
+            sentiment:
+              allOf:
+                - $ref: '#/components/schemas/CourseSentiment'
+                - nullable: true
+
+    CourseSearchResult:
+      allOf:
+        - $ref: '#/components/schemas/CourseWithSentiment'
+        - type: object
+          required:
+            - relevanceScore
+          properties:
+            relevanceScore:
+              type: number
+              format: float
+              minimum: 0
+              maximum: 1
+              example: 0.85
+            reasoning:
+              type: string
+              example: "Matches query for machine learning courses with high student ratings"
+
+    PaginationMeta:
+      type: object
+      required:
+        - cursor
+        - nextCursor
+        - limit
+        - hasMore
+      properties:
+        cursor:
+          type: string
+          nullable: true
+        nextCursor:
+          type: string
+          nullable: true
+        limit:
+          type: integer
+        hasMore:
+          type: boolean
+
+    CourseListResponse:
+      type: object
+      required:
+        - courses
+        - pagination
+      properties:
+        courses:
+          type: array
+          items:
+            $ref: '#/components/schemas/CourseWithSentiment'
+        pagination:
+          $ref: '#/components/schemas/PaginationMeta'
+
+    CourseDetailResponse:
+      allOf:
+        - $ref: '#/components/schemas/CourseWithSentiment'
+        - type: object
+          required:
+            - prerequisites
+            - requiredBy
+          properties:
+            prerequisites:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  course:
+                    $ref: '#/components/schemas/Course'
+            requiredBy:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  course:
+                    $ref: '#/components/schemas/Course'
+
+    SearchQuery:
+      type: object
+      required:
+        - query
+      properties:
+        query:
+          type: string
+          minLength: 1
+          maxLength: 500
+          example: "machine learning courses with good ratings"
+        filters:
+          type: object
+          properties:
+            faculty:
+              type: string
+            subject:
+              type: string
+            minGpa:
+              type: number
+              format: float
+              minimum: 0
+              maximum: 4
+            maxDifficulty:
+              type: number
+              format: float
+              minimum: 1
+              maximum: 5
+            term:
+              type: string
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 10
+
+    CourseSearchResponse:
+      type: object
+      required:
+        - results
+        - query
+        - totalResults
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/CourseSearchResult'
+        query:
+          type: string
+        totalResults:
+          type: integer
+
+    PrerequisiteNode:
+      type: object
+      required:
+        - course
+        - children
+      properties:
+        course:
+          $ref: '#/components/schemas/Course'
+        children:
+          type: array
+          items:
+            $ref: '#/components/schemas/PrerequisiteNode'
+
+    PrerequisiteTreeResponse:
+      type: object
+      required:
+        - course
+        - tree
+        - depth
+      properties:
+        course:
+          $ref: '#/components/schemas/Course'
+        tree:
+          $ref: '#/components/schemas/PrerequisiteNode'
+        depth:
+          type: integer
+
+    ScrapeJobRequest:
+      type: object
+      required:
+        - subject
+        - number
+        - term
+      properties:
+        subject:
+          type: string
+          minLength: 2
+          maxLength: 10
+          example: "CMPUT"
+        number:
+          type: integer
+          minimum: 100
+          maximum: 999
+          example: 272
+        term:
+          type: string
+          example: "Fall 2024"
+        force:
+          type: boolean
+          default: false
+          description: Bypass 24-hour scrape check
+
+    ScrapeJobResponse:
+      type: object
+      required:
+        - jobId
+        - status
+      properties:
+        jobId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [queued, processing, completed, failed]
+        message:
+          type: string
+
+    HealthResponse:
+      type: object
+      required:
+        - status
+        - database
+        - redis
+      properties:
+        status:
+          type: string
+          enum: [healthy, unhealthy, degraded]
+        database:
+          type: string
+          example: "healthy"
+        redis:
+          type: string
+          example: "healthy"
+        version:
+          type: string
+          example: "1.0.0"
+        uptimeSeconds:
+          type: number
+          format: float
+        timestamp:
+          type: string
+          format: date-time
+
+    ErrorResponse:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          example: "VALIDATION_ERROR"
+        message:
+          type: string
+          example: "Invalid request parameters"
+        details:
+          type: object
+          additionalProperties: true
+        path:
+          type: string
+          example: "/api/v1/courses"
+        timestamp:
+          type: string
+          format: date-time

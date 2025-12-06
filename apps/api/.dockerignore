@@ -1,0 +1,38 @@
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# Testing
+.pytest_cache
+.coverage
+htmlcov/
+
+# Distribution
+*.egg-info/
+dist/
+build/
+
+# Misc
+.DS_Store
+*.log
+
+# Local env files
+.env
+.env.local
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Alembic
+alembic/versions/*.py
+!alembic/versions/__init__.py

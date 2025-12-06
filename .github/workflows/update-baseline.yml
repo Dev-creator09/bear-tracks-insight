@@ -1,0 +1,187 @@
+name: Update Evaluation Baseline
+
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Reason for updating baseline'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-baseline:
+    name: Update Eval Baseline
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: bear_tracks_eval
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: apps/api/requirements.txt
+
+      - name: Install dependencies
+        working-directory: apps/api
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install pgvector extension
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+          PGPASSWORD=postgres psql -h localhost -U postgres -d bear_tracks_eval -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+      - name: Setup database with test data
+        working-directory: apps/api
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/bear_tracks_eval
+          REDIS_URL: redis://localhost:6379/0
+        run: |
+          alembic upgrade head
+          # Seed test data if needed
+          # python scripts/seed_test_data.py
+
+      - name: Run evaluation harness
+        working-directory: apps/api
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/bear_tracks_eval
+          REDIS_URL: redis://localhost:6379/0
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python -m app.evals.eval_runner
+
+      - name: Extract metrics from eval results
+        id: metrics
+        working-directory: apps/api
+        run: |
+          # Query the latest run from SQLite and extract metrics
+          python << 'PYTHON_SCRIPT'
+          import sqlite3
+          import json
+          from datetime import datetime
+
+          conn = sqlite3.connect('evals/evals.db')
+          cursor = conn.cursor()
+
+          # Get the latest run
+          cursor.execute('''
+            SELECT
+              overall_recall,
+              overall_mrr,
+              overall_precision,
+              overall_ndcg,
+              avg_latency_ms,
+              total_cost_usd,
+              num_queries
+            FROM eval_runs
+            ORDER BY timestamp DESC
+            LIMIT 1
+          ''')
+
+          row = cursor.fetchone()
+          if not row:
+            print("No eval results found")
+            exit(1)
+
+          baseline = {
+            "recall_at_10": row[0],
+            "mrr": row[1],
+            "precision_at_10": row[2],
+            "ndcg_at_10": row[3],
+            "avg_latency_ms": row[4],
+            "avg_cost_usd": row[5],
+            "total_queries": row[6],
+            "model_version": "claude-3-5-sonnet-20241022",
+            "timestamp": datetime.utcnow().isoformat() + "Z"
+          }
+
+          # Write to file
+          with open('../../.github/eval-baseline.json', 'w') as f:
+            json.dump(baseline, f, indent=2)
+
+          print(f"Baseline updated:")
+          print(f"  Recall@10: {baseline['recall_at_10']:.3f}")
+          print(f"  MRR: {baseline['mrr']:.3f}")
+          print(f"  Cost: ${baseline['avg_cost_usd']:.2f}")
+
+          conn.close()
+          PYTHON_SCRIPT
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: |
+            Update evaluation baseline
+
+            Reason: ${{ github.event.inputs.reason }}
+
+            Updated metrics from latest eval run.
+          branch: update-eval-baseline-${{ github.run_number }}
+          delete-branch: true
+          title: 'Update Evaluation Baseline'
+          body: |
+            ## Evaluation Baseline Update
+
+            **Reason:** ${{ github.event.inputs.reason }}
+
+            This PR updates the evaluation baseline metrics based on the latest evaluation run.
+
+            ### Updated Metrics
+
+            See `.github/eval-baseline.json` for the new baseline values.
+
+            **Triggered by:** @${{ github.actor }}
+            **Workflow Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            ### Review Checklist
+
+            - [ ] Review the new metrics to ensure they represent intentional improvements
+            - [ ] Verify no significant regressions in any category
+            - [ ] Confirm the reason for the update is valid
+
+            ### Next Steps
+
+            After merging, the new baseline will be used for comparison in future CI runs.
+          labels: |
+            evaluation
+            automated
+          draft: false
